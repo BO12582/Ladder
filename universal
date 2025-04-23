@@ -1,0 +1,142 @@
+game:GetService("StarterGui"):SetCore("SendNotification",{
+                Title = "Credit",
+                Text = "Bohight123",
+                 Duration = 15})
+
+if game:GetService("CoreGui"):FindFirstChild("Emotes") then
+    game:GetService("CoreGui"):FindFirstChild("Emotes"):Destroy()
+end
+
+wait(1)
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local tool = Instance.new("Tool", player.Backpack)
+tool.Name = "Ladder"
+tool.RequiresHandle = false
+
+local debounce = false
+local ghostLadder = nil
+local placedLadder = nil
+
+-- Cấu hình thang
+local ladderHeight = 15
+local rungSpacing = 1.5
+local sideOffset = 1.5
+local sideWidth = 1.2
+local rungWidth = 0.8 -- Dày hơn
+local rungLength = sideOffset * 2 + sideWidth
+
+-- Tạo thang (Preview hoặc Real)
+local function createLadderModel(isGhost)
+	local model = Instance.new("Model")
+	model.Name = isGhost and "GhostLadder" or "RealLadder"
+	local basePos = Vector3.new(0, 0, 0)
+	local primary = nil
+
+	for _, x in ipairs({-sideOffset, sideOffset}) do
+		local side = Instance.new("Part")
+		side.Size = Vector3.new(sideWidth, ladderHeight, sideWidth)
+		side.Anchored = isGhost
+		side.CanCollide = not isGhost
+		side.Transparency = isGhost and 0.6 or 0
+		side.Material = Enum.Material.Wood
+		side.BrickColor = BrickColor.new("Reddish brown")
+		side.CFrame = CFrame.new(basePos + Vector3.new(x, ladderHeight / 2, 0))
+		side.Name = "Side"
+		side.Parent = model
+		if not primary then primary = side end
+	end
+
+	for i = 0, math.floor(ladderHeight / rungSpacing) - 1 do
+		local rung = Instance.new("Part")
+		rung.Size = Vector3.new(rungLength, rungWidth, rungWidth)
+		rung.Anchored = isGhost
+		rung.CanCollide = not isGhost
+		rung.Transparency = isGhost and 0.6 or 0
+		rung.Material = Enum.Material.Wood
+		rung.BrickColor = BrickColor.new("Reddish brown")
+		rung.CFrame = CFrame.new(basePos + Vector3.new(0, (rungSpacing * i) + 0.2, 0))
+		rung.Name = "Rung"
+		rung.Parent = model
+	end
+
+	if not isGhost then
+		local base = Instance.new("Part")
+		base.Size = Vector3.new(3.5, 0.4, 3.5)
+		base.Anchored = false
+		base.CanCollide = true
+		base.Transparency = 1
+		base.Name = "BaseSupport"
+		base.CFrame = CFrame.new(basePos + Vector3.new(0, -0.2, 0))
+		base.Parent = model
+	end
+
+	model.PrimaryPart = primary
+
+	if not isGhost then
+		for _, part in ipairs(model:GetChildren()) do
+			if part:IsA("Part") and part ~= primary then
+				local weld = Instance.new("WeldConstraint")
+				weld.Part0 = primary
+				weld.Part1 = part
+				weld.Parent = part
+			end
+		end
+	end
+
+	return model
+end
+
+-- Khi cầm tool thì hiện preview
+tool.Equipped:Connect(function()
+	if ghostLadder then ghostLadder:Destroy() end
+	ghostLadder = createLadderModel(true)
+	ghostLadder.Parent = workspace
+end)
+
+tool.Unequipped:Connect(function()
+	if ghostLadder then
+		ghostLadder:Destroy()
+		ghostLadder = nil
+	end
+end)
+
+-- Di chuyển preview theo trước mặt người chơi
+RunService.RenderStepped:Connect(function()
+	if ghostLadder and character:FindFirstChild("HumanoidRootPart") then
+		local root = character.HumanoidRootPart
+		local targetCFrame = root.CFrame * CFrame.new(0, 0, -5)
+		targetCFrame = targetCFrame + Vector3.new(0, ladderHeight / 2, 0)
+		ghostLadder:SetPrimaryPartCFrame(targetCFrame)
+	end
+end)
+
+-- Đặt hoặc cất thang khi click
+tool.Activated:Connect(function()
+	if debounce then return end
+	debounce = true
+
+	if placedLadder then
+		if placedLadder and placedLadder.Parent then
+			placedLadder:Destroy()
+		end
+		placedLadder = nil
+	else
+		if character:FindFirstChild("HumanoidRootPart") then
+			local root = character.HumanoidRootPart
+			local targetCFrame = root.CFrame * CFrame.new(0, 0, -5)
+			targetCFrame = targetCFrame + Vector3.new(0, ladderHeight / 2, 0)
+
+			placedLadder = createLadderModel(false)
+			placedLadder.Parent = workspace
+			placedLadder:SetPrimaryPartCFrame(targetCFrame)
+		end
+	end
+
+	task.wait(0.3)
+	debounce = false
+end)
