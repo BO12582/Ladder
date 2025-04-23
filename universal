@@ -1,160 +1,231 @@
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local player = Players.LocalPlayer
-local character = player.Character or player.CharacterAdded:Wait()
-local backpack = player:WaitForChild("Backpack")
+-- Services
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
--- Tạo GUI AL
-local screenGui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
-screenGui.ResetOnSpawn = false
+-- Player & Character
+local player     = Players.LocalPlayer
+local character  = player.Character or player.CharacterAdded:Wait()
 
-local alButton = Instance.new("TextButton")
-alButton.Size = UDim2.new(0, 100, 0, 40)
-alButton.Position = UDim2.new(1, -110, 1, -50)
-alButton.AnchorPoint = Vector2.new(1, 1)
-alButton.Text = "AL"
-alButton.TextScaled = true
-alButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-alButton.TextColor3 = Color3.new(1, 1, 1)
-alButton.Parent = screenGui
+-- Tool
+local tool = Instance.new("Tool")
+tool.Name           = "Ladder"
+tool.RequiresHandle = false
+tool.Parent         = player.Backpack
 
--- Thông báo
-local msg = Instance.new("TextLabel")
-msg.Size = UDim2.new(0, 200, 0, 40)
-msg.Position = UDim2.new(0.5, -100, 0.75, 0)
-msg.BackgroundTransparency = 0.3
-msg.BackgroundColor3 = Color3.new(0, 0, 0)
-msg.TextColor3 = Color3.new(1, 1, 1)
-msg.TextScaled = true
-msg.Visible = false
-msg.Parent = screenGui
+-- State
+local debounce        = false
+local ghostLadder     = nil
+local placedLadder    = nil
+local notificationGui = nil
 
--- Cập nhật hiển thị nút AL
-local function updateAL()
-	local has = backpack:FindFirstChild("Ladder") or character:FindFirstChild("Ladder")
-	alButton.Visible = not has
+-- Config
+local ladderHeight = 15
+local rungSpacing  = 1.5
+local sideOffset   = 1.5
+local sideWidth    = 1.2
+local rungWidth    = 0.8
+local rungLength   = sideOffset * 2 + sideWidth
+
+--------------------------------------------------------------------------------
+-- Create Ladder Model (ghost or real)
+--------------------------------------------------------------------------------
+local function createLadderModel(isGhost)
+    local model = Instance.new("Model")
+    model.Name  = isGhost and "GhostLadder" or "RealLadder"
+
+    local basePos = Vector3.new(0, 0, 0)
+    local primary = nil
+
+    -- Side rails
+    for _, x in ipairs({-sideOffset, sideOffset}) do
+        local side = Instance.new("Part")
+        side.Name         = "Side"
+        side.Size         = Vector3.new(sideWidth, ladderHeight, sideWidth)
+        side.Anchored     = isGhost
+        side.CanCollide   = not isGhost
+        side.Transparency = isGhost and 0.6 or 0
+        side.Material     = Enum.Material.Wood
+        side.BrickColor   = BrickColor.new("Reddish brown")
+        side.CFrame       = CFrame.new(basePos + Vector3.new(x, ladderHeight/2, 0))
+        side.Parent       = model
+
+        if not primary then
+            primary = side
+        end
+    end
+
+    -- Rungs
+    for i = 0, math.floor(ladderHeight/rungSpacing)-1 do
+        local rung = Instance.new("Part")
+        rung.Name         = "Rung"
+        rung.Size         = Vector3.new(rungLength, rungWidth, rungWidth)
+        rung.Anchored     = isGhost
+        rung.CanCollide   = not isGhost
+        rung.Transparency = isGhost and 0.6 or 0
+        rung.Material     = Enum.Material.Wood
+        rung.BrickColor   = BrickColor.new("Reddish brown")
+        rung.CFrame       = CFrame.new(basePos + Vector3.new(0, rungSpacing*i + 0.2, 0))
+        rung.Parent       = model
+    end
+
+    if not isGhost then
+        -- Invisible base support so ladder không đổ
+        local base = Instance.new("Part")
+        base.Name         = "BaseSupport"
+        base.Size         = Vector3.new(3.5, 0.4, 3.5)
+        base.Anchored     = false
+        base.CanCollide   = true
+        base.Transparency = 1
+        base.CFrame       = CFrame.new(basePos + Vector3.new(0, -0.2, 0))
+        base.Parent       = model
+
+        -- Two extra bottom legs, same width as side rails
+        for _, x in ipairs({-sideOffset, sideOffset}) do
+            local leg = Instance.new("Part")
+            leg.Name         = "BottomLeg"
+            leg.Size         = Vector3.new(sideWidth, 2, sideWidth)
+            leg.Anchored     = false
+            leg.CanCollide   = true
+            leg.Transparency = 0
+            leg.BrickColor   = BrickColor.new("Reddish brown")
+            leg.CFrame       = CFrame.new(basePos + Vector3.new(x, -1, 0))
+            leg.Parent       = model
+        end
+    end
+
+    -- Weld all parts to primary
+    model.PrimaryPart = primary
+    if not isGhost then
+        for _, part in ipairs(model:GetChildren()) do
+            if part:IsA("Part") and part ~= primary then
+                local weld = Instance.new("WeldConstraint")
+                weld.Part0 = primary
+                weld.Part1 = part
+                weld.Parent = part
+            end
+        end
+    end
+
+    return model
 end
 
--- Clone ladder nếu chưa có
-alButton.MouseButton1Click:Connect(function()
-	if backpack:FindFirstChild("Ladder") or character:FindFirstChild("Ladder") then
-		msg.Text = "You already have a ladder."
-		msg.Visible = true
-		task.delay(2, function() msg.Visible = false end)
-	else
-		local ladder = ReplicatedStorage:FindFirstChild("Ladder")
-		if ladder then ladder:Clone().Parent = backpack end
-	end
+--------------------------------------------------------------------------------
+-- Cleanup on respawn & show notification once
+--------------------------------------------------------------------------------
+player.CharacterAdded:Connect(function(char)
+    character = char
+
+    -- destroy any old preview
+    if ghostLadder then
+        ghostLadder:Destroy()
+        ghostLadder = nil
+    end
+
+    -- if no Ladder tool in backpack, show notification once
+    if not player.Backpack:FindFirstChild("Ladder") then
+        if not notificationGui then
+            -- Show GUI
+            notificationGui = Instance.new("ScreenGui")
+            notificationGui.Name   = "LadderNotify"
+            notificationGui.Parent = player:WaitForChild("PlayerGui")
+
+            local frame = Instance.new("Frame", notificationGui)
+            frame.Size            = UDim2.new(0.5, 0, 0.3, 0)
+            frame.Position        = UDim2.new(0.25, 0, 0.35, 0)
+            frame.BackgroundColor3    = Color3.fromRGB(0, 0, 0)
+            frame.BackgroundTransparency = 0.5
+
+            local msg = Instance.new("TextLabel", frame)
+            msg.Size               = UDim2.new(1, 0, 0.6, 0)
+            msg.Position           = UDim2.new(0, 0, 0, 0)
+            msg.BackgroundTransparency = 1
+            msg.TextColor3         = Color3.new(1,1,1)
+            msg.TextScaled         = true
+            msg.Text               = "You don't have the Ladder tool.\nRetrieve it?"
+
+            local yesBtn = Instance.new("TextButton", frame)
+            yesBtn.Size            = UDim2.new(0.45, 0, 0.3, 0)
+            yesBtn.Position        = UDim2.new(0.05, 0, 0.65, 0)
+            yesBtn.Text            = "Yes"
+            yesBtn.TextColor3      = Color3.new(1,1,1)
+            yesBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+            yesBtn.MouseButton1Click:Connect(function()
+                tool.Parent = player.Backpack
+                notificationGui:Destroy()
+                notificationGui = nil
+            end)
+
+            local noBtn = Instance.new("TextButton", frame)
+            noBtn.Size             = UDim2.new(0.45, 0, 0.3, 0)
+            noBtn.Position         = UDim2.new(0.5, 0, 0.65, 0)
+            noBtn.Text             = "No"
+            noBtn.TextColor3       = Color3.new(1,1,1)
+            noBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+            noBtn.MouseButton1Click:Connect(function()
+                notificationGui:Destroy()
+                notificationGui = nil
+            end)
+        end
+    end
 end)
 
--- Tự động cập nhật khi có thay đổi
-player.Backpack.ChildAdded:Connect(updateAL)
-player.Backpack.ChildRemoved:Connect(updateAL)
-character.ChildAdded:Connect(updateAL)
-character.ChildRemoved:Connect(updateAL)
-updateAL()
-
--- Preview ladder
-local previewModel = nil
-
-local function getSafePlacementCFrame()
-	local root = character:FindFirstChild("HumanoidRootPart")
-	if not root then return end
-	local dir = root.CFrame.LookVector
-	local origin = root.Position + Vector3.new(0, 2, 0)
-	local ray = Ray.new(origin, dir * 5)
-	local hit, pos = workspace:FindPartOnRay(ray, character)
-	local offset = 3
-	local final = hit and (pos - dir * offset) or (origin + dir * 5)
-	return CFrame.new(final, final + root.CFrame.LookVector)
-end
-
-local function createPreview()
-	if previewModel then previewModel:Destroy() end
-
-	local model = Instance.new("Model")
-	model.Name = "LadderPreview"
-
-	local stepCount = 8
-	for i = 0, stepCount do
-		local step = Instance.new("Part")
-		step.Size = Vector3.new(2, 0.4, 0.4)
-		step.Position = Vector3.new(0, i * 1.2, 0)
-		step.Anchored = true
-		step.CanCollide = false
-		step.Transparency = 0.6
-		step.BrickColor = BrickColor.Gray()
-		step.Parent = model
-	end
-
-	local sideL = Instance.new("Part")
-	sideL.Size = Vector3.new(0.6, stepCount * 1.2 + 0.4, 0.4)
-	sideL.Position = Vector3.new(-1.1, (stepCount * 1.2)/2, 0)
-	sideL.Anchored = true
-	sideL.CanCollide = false
-	sideL.Transparency = 0.6
-	sideL.BrickColor = BrickColor.Gray()
-	sideL.Parent = model
-
-	local sideR = sideL:Clone()
-	sideR.Position = Vector3.new(1.1, sideL.Position.Y, 0)
-	sideR.Parent = model
-
-	model.Parent = workspace
-	previewModel = model
-end
-
-local function updatePreview()
-	if not previewModel then return end
-	local cf = getSafePlacementCFrame()
-	if cf then
-		previewModel:SetPrimaryPartCFrame(cf)
-	end
-end
-
--- Đặt thang/cất thang
-local placing = false
-game:GetService("UserInputService").InputBegan:Connect(function(input, gp)
-	if gp or input.KeyCode ~= Enum.KeyCode.E then return end
-	local tool = backpack:FindFirstChild("Ladder") or character:FindFirstChild("Ladder")
-	if not tool then return end
-
-	if not placing then
-		createPreview()
-		updatePreview()
-		placing = true
-	else
-		if previewModel then
-			local placed = previewModel:Clone()
-			for _, p in pairs(placed:GetDescendants()) do
-				if p:IsA("Part") then
-					p.Anchored = false
-					p.CanCollide = true
-					p.Transparency = 0
-				end
-			end
-			placed.Name = "Ladder"
-			placed.Parent = workspace
-			previewModel:Destroy()
-			previewModel = nil
-		end
-		placing = false
-	end
+--------------------------------------------------------------------------------
+-- Preview creation / cleanup
+--------------------------------------------------------------------------------
+tool.Equipped:Connect(function()
+    if ghostLadder then
+        ghostLadder:Destroy()
+    end
+    ghostLadder = createLadderModel(true)
+    ghostLadder.Parent = workspace
 end)
 
--- Luôn cập nhật vị trí preview
-game:GetService("RunService").RenderStepped:Connect(function()
-	if placing then updatePreview() end
+tool.Unequipped:Connect(function()
+    if ghostLadder then
+        ghostLadder:Destroy()
+        ghostLadder = nil
+    end
 end)
 
--- Tự lấy lại tool khi rơi xuống void
-workspace.ChildAdded:Connect(function(obj)
-	if obj:IsA("Tool") and obj.Name == "Ladder" then
-		task.wait(2)
-		if obj:IsDescendantOf(workspace) and (obj.Position.Y < -100) then
-			obj:Destroy()
-			local tool = ReplicatedStorage:FindFirstChild("Ladder")
-			if tool then tool:Clone().Parent = backpack end
-		end
-	end
+--------------------------------------------------------------------------------
+-- Update preview position every frame
+--------------------------------------------------------------------------------
+RunService.RenderStepped:Connect(function()
+    if ghostLadder
+    and character:FindFirstChild("HumanoidRootPart") then
+
+        local hrp = character.HumanoidRootPart
+        local cf  = hrp.CFrame
+                   * CFrame.new(0, 0, -5)
+                   * CFrame.new(0, ladderHeight/2, 0)
+
+        ghostLadder:SetPrimaryPartCFrame(cf)
+    end
+end)
+
+--------------------------------------------------------------------------------
+-- Place / Remove Ladder on click
+--------------------------------------------------------------------------------
+tool.Activated:Connect(function()
+    if debounce then return end
+    debounce = true
+
+    if placedLadder then
+        placedLadder:Destroy()
+        placedLadder = nil
+    else
+        if character:FindFirstChild("HumanoidRootPart") then
+            local hrp = character.HumanoidRootPart
+            local cf  = hrp.CFrame
+                       * CFrame.new(0, 0, -5)
+                       * CFrame.new(0, ladderHeight/2, 0)
+
+            placedLadder = createLadderModel(false)
+            placedLadder.Parent = workspace
+            placedLadder:SetPrimaryPartCFrame(cf)
+        end
+    end
+
+    task.wait(0.3)
+    debounce = false
 end)
