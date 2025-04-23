@@ -1,205 +1,160 @@
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local StarterGui = game:GetService("StarterGui")
-
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
+local backpack = player:WaitForChild("Backpack")
 
--- GUI nút AL
-local function createLadderGUI()
-	if player.PlayerGui:FindFirstChild("LadderGui") then return end
+-- Tạo GUI AL
+local screenGui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
+screenGui.ResetOnSpawn = false
 
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "LadderGui"
-	screenGui.ResetOnSpawn = false
-	screenGui.Parent = player:WaitForChild("PlayerGui")
+local alButton = Instance.new("TextButton")
+alButton.Size = UDim2.new(0, 100, 0, 40)
+alButton.Position = UDim2.new(1, -110, 1, -50)
+alButton.AnchorPoint = Vector2.new(1, 1)
+alButton.Text = "AL"
+alButton.TextScaled = true
+alButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+alButton.TextColor3 = Color3.new(1, 1, 1)
+alButton.Parent = screenGui
 
-	local button = Instance.new("TextButton")
-	button.Size = UDim2.new(0, 60, 0, 30)
-	button.Position = UDim2.new(1, -70, 1, -40)
-	button.AnchorPoint = Vector2.new(1,1)
-	button.Text = "AL"
-	button.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
-	button.TextColor3 = Color3.new(1,1,1)
-	button.BorderSizePixel = 0
-	button.Font = Enum.Font.SourceSansBold
-	button.TextSize = 18
-	button.Parent = screenGui
+-- Thông báo
+local msg = Instance.new("TextLabel")
+msg.Size = UDim2.new(0, 200, 0, 40)
+msg.Position = UDim2.new(0.5, -100, 0.75, 0)
+msg.BackgroundTransparency = 0.3
+msg.BackgroundColor3 = Color3.new(0, 0, 0)
+msg.TextColor3 = Color3.new(1, 1, 1)
+msg.TextScaled = true
+msg.Visible = false
+msg.Parent = screenGui
 
-	button.MouseButton1Click:Connect(function()
-		if not player.Backpack:FindFirstChild("Ladder") then
-			local tool = Instance.new("Tool")
-			tool.Name = "Ladder"
-			tool.RequiresHandle = false
-			tool.Parent = player.Backpack
-		end
-		button.Visible = false
-	end)
+-- Cập nhật hiển thị nút AL
+local function updateAL()
+	local has = backpack:FindFirstChild("Ladder") or character:FindFirstChild("Ladder")
+	alButton.Visible = not has
 end
 
-createLadderGUI()
-
--- Tool chính
-local tool = Instance.new("Tool")
-tool.Name = "Ladder"
-tool.RequiresHandle = false
-tool.Parent = player.Backpack
-
-local debounce = false
-local ghostLadder = nil
-local placedLadder = nil
-
-local ladderHeight = 15
-local rungSpacing = 1.5
-local sideOffset = 1.5
-local sideWidth = 1.2
-local rungWidth = 0.8
-local rungLength = sideOffset * 2 + sideWidth
-
--- Tạo mô hình thang
-local function createLadderModel(isGhost)
-	local model = Instance.new("Model")
-	model.Name = isGhost and "GhostLadder" or "RealLadder"
-	local basePos = Vector3.new(0, 0, 0)
-	local primary = nil
-
-	for _, x in ipairs({-sideOffset, sideOffset}) do
-		local side = Instance.new("Part")
-		side.Size = Vector3.new(sideWidth, ladderHeight, sideWidth)
-		side.Anchored = isGhost
-		side.CanCollide = not isGhost
-		side.Transparency = isGhost and 0.6 or 0
-		side.Material = Enum.Material.Wood
-		side.BrickColor = BrickColor.new("Reddish brown")
-		side.CFrame = CFrame.new(basePos + Vector3.new(x, ladderHeight / 2, 0))
-		side.Name = "Side"
-		side.Parent = model
-		if not primary then primary = side end
+-- Clone ladder nếu chưa có
+alButton.MouseButton1Click:Connect(function()
+	if backpack:FindFirstChild("Ladder") or character:FindFirstChild("Ladder") then
+		msg.Text = "You already have a ladder."
+		msg.Visible = true
+		task.delay(2, function() msg.Visible = false end)
+	else
+		local ladder = ReplicatedStorage:FindFirstChild("Ladder")
+		if ladder then ladder:Clone().Parent = backpack end
 	end
+end)
 
-	for i = 0, math.floor(ladderHeight / rungSpacing) - 1 do
-		local rung = Instance.new("Part")
-		rung.Size = Vector3.new(rungLength, rungWidth + 0.2, rungWidth)
-		rung.Anchored = isGhost
-		rung.CanCollide = not isGhost
-		rung.Transparency = isGhost and 0.6 or 0
-		rung.Material = Enum.Material.Wood
-		rung.BrickColor = BrickColor.new("Reddish brown")
-		rung.CFrame = CFrame.new(basePos + Vector3.new(0, (rungSpacing * i) + 0.2, 0))
-		rung.Name = "Rung"
-		rung.Parent = model
-	end
+-- Tự động cập nhật khi có thay đổi
+player.Backpack.ChildAdded:Connect(updateAL)
+player.Backpack.ChildRemoved:Connect(updateAL)
+character.ChildAdded:Connect(updateAL)
+character.ChildRemoved:Connect(updateAL)
+updateAL()
 
-	if not isGhost then
-		local base = Instance.new("Part")
-		base.Size = Vector3.new(3.5, 0.4, 3.5)
-		base.Anchored = false
-		base.CanCollide = true
-		base.Transparency = 1
-		base.Name = "BaseSupport"
-		base.CFrame = CFrame.new(basePos + Vector3.new(0, -0.2, 0))
-		base.Parent = model
-	end
+-- Preview ladder
+local previewModel = nil
 
-	model.PrimaryPart = primary
-
-	if not isGhost then
-		for _, part in ipairs(model:GetChildren()) do
-			if part:IsA("Part") and part ~= primary then
-				local weld = Instance.new("WeldConstraint")
-				weld.Part0 = primary
-				weld.Part1 = part
-				weld.Parent = part
-			end
-		end
-	end
-
-	return model
-end
-
--- Raycast kiểm tra vật cản trước mặt
 local function getSafePlacementCFrame()
 	local root = character:FindFirstChild("HumanoidRootPart")
-	if not root then return nil end
+	if not root then return end
+	local dir = root.CFrame.LookVector
+	local origin = root.Position + Vector3.new(0, 2, 0)
+	local ray = Ray.new(origin, dir * 5)
+	local hit, pos = workspace:FindPartOnRay(ray, character)
+	local offset = 3
+	local final = hit and (pos - dir * offset) or (origin + dir * 5)
+	return CFrame.new(final, final + root.CFrame.LookVector)
+end
 
-	local forward = root.CFrame.LookVector
-	local startPos = root.Position
-	local params = RaycastParams.new()
-	params.FilterDescendantsInstances = {character, ghostLadder}
-	params.FilterType = Enum.RaycastFilterType.Blacklist
+local function createPreview()
+	if previewModel then previewModel:Destroy() end
 
-	local rayResult = workspace:Raycast(startPos, forward * 6, params)
+	local model = Instance.new("Model")
+	model.Name = "LadderPreview"
 
-	if rayResult then
-		local safeDist = (rayResult.Position - startPos).Magnitude - 1.5
-		if safeDist < 1 then return nil end
-		return CFrame.new(startPos) * CFrame.new(0, ladderHeight/2, -safeDist)
-	else
-		return root.CFrame * CFrame.new(0, ladderHeight/2, -5)
+	local stepCount = 8
+	for i = 0, stepCount do
+		local step = Instance.new("Part")
+		step.Size = Vector3.new(2, 0.4, 0.4)
+		step.Position = Vector3.new(0, i * 1.2, 0)
+		step.Anchored = true
+		step.CanCollide = false
+		step.Transparency = 0.6
+		step.BrickColor = BrickColor.Gray()
+		step.Parent = model
+	end
+
+	local sideL = Instance.new("Part")
+	sideL.Size = Vector3.new(0.6, stepCount * 1.2 + 0.4, 0.4)
+	sideL.Position = Vector3.new(-1.1, (stepCount * 1.2)/2, 0)
+	sideL.Anchored = true
+	sideL.CanCollide = false
+	sideL.Transparency = 0.6
+	sideL.BrickColor = BrickColor.Gray()
+	sideL.Parent = model
+
+	local sideR = sideL:Clone()
+	sideR.Position = Vector3.new(1.1, sideL.Position.Y, 0)
+	sideR.Parent = model
+
+	model.Parent = workspace
+	previewModel = model
+end
+
+local function updatePreview()
+	if not previewModel then return end
+	local cf = getSafePlacementCFrame()
+	if cf then
+		previewModel:SetPrimaryPartCFrame(cf)
 	end
 end
 
--- Tool được cầm
-tool.Equipped:Connect(function()
-	if ghostLadder then ghostLadder:Destroy() end
-	ghostLadder = createLadderModel(true)
-	ghostLadder.Parent = workspace
-end)
+-- Đặt thang/cất thang
+local placing = false
+game:GetService("UserInputService").InputBegan:Connect(function(input, gp)
+	if gp or input.KeyCode ~= Enum.KeyCode.E then return end
+	local tool = backpack:FindFirstChild("Ladder") or character:FindFirstChild("Ladder")
+	if not tool then return end
 
-tool.Unequipped:Connect(function()
-	if ghostLadder then
-		ghostLadder:Destroy()
-		ghostLadder = nil
-	end
-end)
-
--- Di chuyển preview thang
-RunService.RenderStepped:Connect(function()
-	if ghostLadder and character:FindFirstChild("HumanoidRootPart") then
-		local cframe = getSafePlacementCFrame()
-		if cframe then
-			ghostLadder:SetPrimaryPartCFrame(cframe)
-		end
-	end
-end)
-
--- Đặt / cất thang
-tool.Activated:Connect(function()
-	if debounce then return end
-	debounce = true
-
-	if placedLadder then
-		placedLadder:Destroy()
-		placedLadder = nil
+	if not placing then
+		createPreview()
+		updatePreview()
+		placing = true
 	else
-		local cframe = getSafePlacementCFrame()
-		if cframe then
-			placedLadder = createLadderModel(false)
-			placedLadder.Parent = workspace
-			placedLadder:SetPrimaryPartCFrame(cframe)
-		end
-	end
-
-	task.wait(0.3)
-	debounce = false
-end)
-
--- Tự động lấy lại tool nếu rơi void
-task.spawn(function()
-	while true do
-		task.wait(1)
-		if (not tool.Parent or tool.Parent == workspace) and tool:IsDescendantOf(game) then
-			local handle = tool:FindFirstChild("Handle")
-			if not handle or (handle and handle.Position.Y < -100) then
-				tool.Parent = player.Backpack
+		if previewModel then
+			local placed = previewModel:Clone()
+			for _, p in pairs(placed:GetDescendants()) do
+				if p:IsA("Part") then
+					p.Anchored = false
+					p.CanCollide = true
+					p.Transparency = 0
+				end
 			end
+			placed.Name = "Ladder"
+			placed.Parent = workspace
+			previewModel:Destroy()
+			previewModel = nil
 		end
+		placing = false
 	end
 end)
 
--- Khi chết, tạo lại GUI nếu mất
-player.CharacterAdded:Connect(function()
-	character = player.Character or player.CharacterAdded:Wait()
-	task.wait(1)
-	createLadderGUI()
+-- Luôn cập nhật vị trí preview
+game:GetService("RunService").RenderStepped:Connect(function()
+	if placing then updatePreview() end
+end)
+
+-- Tự lấy lại tool khi rơi xuống void
+workspace.ChildAdded:Connect(function(obj)
+	if obj:IsA("Tool") and obj.Name == "Ladder" then
+		task.wait(2)
+		if obj:IsDescendantOf(workspace) and (obj.Position.Y < -100) then
+			obj:Destroy()
+			local tool = ReplicatedStorage:FindFirstChild("Ladder")
+			if tool then tool:Clone().Parent = backpack end
+		end
+	end
 end)
