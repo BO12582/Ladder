@@ -1,231 +1,502 @@
+--------------------------------------------------------------------------------
+-- AUTO CLEANUP PREVIOUS EXECUTION
+--------------------------------------------------------------------------------
+if shared.LadderCleanup then
+    pcall(shared.LadderCleanup)
+end
+
+local connections = {}
+
 -- Services
-local Players    = game:GetService("Players")
-local RunService = game:GetService("RunService")
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local Debris           = game:GetService("Debris")
+local UserInputService = game:GetService("UserInputService")
 
 -- Player & Character
 local player     = Players.LocalPlayer
 local character  = player.Character or player.CharacterAdded:Wait()
 
--- Tool
-local tool = Instance.new("Tool")
-tool.Name           = "Ladder"
-tool.RequiresHandle = false
-tool.Parent         = player.Backpack
+shared.LadderCleanup = function()
+    for _, conn in ipairs(connections) do
+        if conn and conn.Connected then conn:Disconnect() end
+    end
+    table.clear(connections)
 
--- State
-local debounce        = false
-local ghostLadder     = nil
-local placedLadder    = nil
-local notificationGui = nil
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj.Name == "GhostLadder" or obj.Name == "RealLadder" or obj.Name == "PunchBlock" then
+            obj:Destroy()
+        end
+    end
 
--- Config
-local ladderHeight = 15
+    if player then
+        if player:FindFirstChild("Backpack") then
+            for _, item in ipairs(player.Backpack:GetChildren()) do
+                if item.Name == "Ladder" then item:Destroy() end
+            end
+        end
+        if player.Character then
+            local item = player.Character:FindFirstChild("Ladder")
+            if item then item:Destroy() end
+        end
+        if player:FindFirstChild("PlayerGui") then
+            for _, gui in ipairs(player.PlayerGui:GetChildren()) do
+                if gui.Name == "LadderNotify" or gui.Name == "LadderModeGui" then
+                    gui:Destroy()
+                end
+            end
+        end
+    end
+end
+
+shared.LadderCleanup()
+
+--------------------------------------------------------------------------------
+-- STATE & CONFIG
+--------------------------------------------------------------------------------
+local debounce       = false
+local ghostLadder    = nil
+local placedLadder   = nil
+local currentMode    = "Normal" 
+local isFlinging     = false 
+
+local ladderHeight = 30
 local rungSpacing  = 1.5
 local sideOffset   = 1.5
 local sideWidth    = 1.2
 local rungWidth    = 0.8
 local rungLength   = sideOffset * 2 + sideWidth
 
+local topPhysics  = PhysicalProperties.new(0.1, 0.2, 0.5) 
+local basePhysics = PhysicalProperties.new(5.0, 0.5, 0.5)
+
 --------------------------------------------------------------------------------
--- Create Ladder Model (ghost or real)
+-- GUI: TẠO MENU CHỌN MODE & CÓ TÊN RÕ RÀNG CHO TỪNG MỤC
 --------------------------------------------------------------------------------
-local function createLadderModel(isGhost)
+local modeGui = Instance.new("ScreenGui")
+modeGui.Name = "LadderModeGui"
+modeGui.Enabled = false
+modeGui.ResetOnSpawn = false 
+modeGui.Parent = player:WaitForChild("PlayerGui")
+
+local modeFrame = Instance.new("Frame", modeGui)
+modeFrame.Size = UDim2.new(0, 190, 0, 420)
+modeFrame.Position = UDim2.new(1, -200, 0.5, -210)
+modeFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+modeFrame.BackgroundTransparency = 0.2
+modeFrame.BorderSizePixel = 0
+
+local title = Instance.new("TextLabel", modeFrame)
+title.Size = UDim2.new(1, 0, 0, 30)
+title.BackgroundTransparency = 1
+title.Text = "CẤU HÌNH CÔNG CỤ"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.SourceSansBold
+title.TextSize = 16
+
+-- Danh sách Mode
+local modes = {
+    {name = "Normal", text = "Thẳng đứng (0°)"},
+    {name = "Tilt45", text = "Nghiêng (45°)"},
+    {name = "Custom", text = "Tùy chỉnh góc"},
+    {name = "Punch",  text = "🚀 SELF-FLING MODE"}
+}
+
+local modeButtons = {}
+for i, modeData in ipairs(modes) do
+    local btn = Instance.new("TextButton", modeFrame)
+    btn.Size = UDim2.new(0.9, 0, 0, 26)
+    btn.Position = UDim2.new(0.05, 0, 0, 28 + (i * 28))
+    btn.Text = modeData.text
+    btn.Font = Enum.Font.SourceSansSemibold
+    btn.TextSize = 13
+    
+    local isSelected = (currentMode == modeData.name)
+    btn.BackgroundColor3 = isSelected and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(70, 70, 70)
+    btn.TextColor3 = Color3.new(1, 1, 1)
+    
+    btn.MouseButton1Click:Connect(function()
+        currentMode = modeData.name
+        for _, b in ipairs(modeButtons) do b.BackgroundColor3 = Color3.fromRGB(70, 70, 70) end
+        btn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+
+        if currentMode == "Punch" then
+            if ghostLadder then ghostLadder:Destroy(); ghostLadder = nil end
+        else
+            if (character and character:FindFirstChild("Ladder")) and not ghostLadder then
+                ghostLadder = _G.CreateLadderModel(true) 
+                ghostLadder.Parent = workspace
+            end
+        end
+    end)
+    table.insert(modeButtons, btn)
+end
+
+-- ==================== PHẦN THANG ====================
+local ladderHeader = Instance.new("TextLabel", modeFrame)
+ladderHeader.Size = UDim2.new(0.9, 0, 0, 20)
+ladderHeader.Position = UDim2.new(0.05, 0, 0, 158)
+ladderHeader.BackgroundTransparency = 1
+ladderHeader.Text = "--- CẤU HÌNH THANG ---"
+ladderHeader.TextColor3 = Color3.fromRGB(0, 255, 128)
+ladderHeader.Font = Enum.Font.SourceSansBold
+ladderHeader.TextSize = 12
+
+local lblHeight = Instance.new("TextLabel", modeFrame)
+lblHeight.Size = UDim2.new(0.9, 0, 0, 16)
+lblHeight.Position = UDim2.new(0.05, 0, 0, 180)
+lblHeight.BackgroundTransparency = 1
+lblHeight.Text = "Chiều dài thang:"
+lblHeight.TextColor3 = Color3.new(1, 1, 1)
+lblHeight.Font = Enum.Font.SourceSans
+lblHeight.TextSize = 12
+lblHeight.TextXAlignment = Enum.TextXAlignment.Left
+
+local customHeightBox = Instance.new("TextBox", modeFrame)
+customHeightBox.Size = UDim2.new(0.9, 0, 0, 24)
+customHeightBox.Position = UDim2.new(0.05, 0, 0, 198)
+customHeightBox.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+customHeightBox.TextColor3 = Color3.new(1, 1, 1)
+customHeightBox.Text = tostring(ladderHeight)
+customHeightBox.Font = Enum.Font.SourceSans
+customHeightBox.TextSize = 13
+
+local lblDegree = Instance.new("TextLabel", modeFrame)
+lblDegree.Size = UDim2.new(0.9, 0, 0, 16)
+lblDegree.Position = UDim2.new(0.05, 0, 0, 224)
+lblDegree.BackgroundTransparency = 1
+lblDegree.Text = "Góc xoay thang (Độ):"
+lblDegree.TextColor3 = Color3.new(1, 1, 1)
+lblDegree.Font = Enum.Font.SourceSans
+lblDegree.TextSize = 12
+lblDegree.TextXAlignment = Enum.TextXAlignment.Left
+
+local customDegreeBox = Instance.new("TextBox", modeFrame)
+customDegreeBox.Size = UDim2.new(0.9, 0, 0, 24)
+customDegreeBox.Position = UDim2.new(0.05, 0, 0, 242)
+customDegreeBox.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+customDegreeBox.TextColor3 = Color3.new(1, 1, 1)
+customDegreeBox.Text = "90"
+customDegreeBox.Font = Enum.Font.SourceSans
+customDegreeBox.TextSize = 13
+
+-- ==================== PHẦN KHỐI ĐẨY (FLING) ====================
+local flingHeader = Instance.new("TextLabel", modeFrame)
+flingHeader.Size = UDim2.new(0.9, 0, 0, 20)
+flingHeader.Position = UDim2.new(0.05, 0, 0, 270)
+flingHeader.BackgroundTransparency = 1
+flingHeader.Text = "--- KHỐI ĐẨY (FLING) ---"
+flingHeader.TextColor3 = Color3.fromRGB(255, 128, 0)
+flingHeader.Font = Enum.Font.SourceSansBold
+flingHeader.TextSize = 12
+
+local lblSpeed = Instance.new("TextLabel", modeFrame)
+lblSpeed.Size = UDim2.new(0.9, 0, 0, 16)
+lblSpeed.Position = UDim2.new(0.05, 0, 0, 292)
+lblSpeed.BackgroundTransparency = 1
+lblSpeed.Text = "Tốc độ bay:"
+lblSpeed.TextColor3 = Color3.new(1, 1, 1)
+lblSpeed.Font = Enum.Font.SourceSans
+lblSpeed.TextSize = 12
+lblSpeed.TextXAlignment = Enum.TextXAlignment.Left
+
+local punchSpeedBox = Instance.new("TextBox", modeFrame)
+punchSpeedBox.Size = UDim2.new(0.9, 0, 0, 24)
+punchSpeedBox.Position = UDim2.new(0.05, 0, 0, 310)
+punchSpeedBox.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+punchSpeedBox.TextColor3 = Color3.new(1, 1, 1)
+punchSpeedBox.Text = "200"
+punchSpeedBox.Font = Enum.Font.SourceSans
+punchSpeedBox.TextSize = 13
+
+local lblFlingAngle = Instance.new("TextLabel", modeFrame)
+lblFlingAngle.Size = UDim2.new(0.9, 0, 0, 16)
+lblFlingAngle.Position = UDim2.new(0.05, 0, 0, 336)
+lblFlingAngle.BackgroundTransparency = 1
+lblFlingAngle.Text = "Góc bay Fling (Độ):"
+lblFlingAngle.TextColor3 = Color3.new(1, 1, 1)
+lblFlingAngle.Font = Enum.Font.SourceSans
+lblFlingAngle.TextSize = 12
+lblFlingAngle.TextXAlignment = Enum.TextXAlignment.Left
+
+local punchAngleBox = Instance.new("TextBox", modeFrame)
+punchAngleBox.Size = UDim2.new(0.9, 0, 0, 24)
+punchAngleBox.Position = UDim2.new(0.05, 0, 0, 354)
+punchAngleBox.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+punchAngleBox.TextColor3 = Color3.new(1, 1, 1)
+punchAngleBox.Text = "0"
+punchAngleBox.Font = Enum.Font.SourceSans
+punchAngleBox.TextSize = 13
+
+--------------------------------------------------------------------------------
+-- HELPER FUNCTIONS
+--------------------------------------------------------------------------------
+local function getModeRotation()
+    if currentMode == "Tilt45" then return CFrame.Angles(math.rad(-45), 0, 0)
+    elseif currentMode == "Custom" then
+        local deg = tonumber(customDegreeBox.Text) or 90
+        return CFrame.Angles(math.rad(-deg), 0, 0)
+    else return CFrame.Angles(0, 0, 0) end
+end
+
+local function setupPartProperties(part, isGhost, isBase)
+    if isGhost then
+        part.Anchored = true; part.CanCollide = false; part.CanTouch = false; part.CanQuery = false; part.Transparency = 0.6
+    else
+        part.Anchored = false; part.CanCollide = true; part.CanTouch = true; part.CanQuery = true; part.Transparency = 0
+        part.CustomPhysicalProperties = isBase and basePhysics or topPhysics
+    end
+end
+
+--------------------------------------------------------------------------------
+-- TẠO MÔ HÌNH THANG
+--------------------------------------------------------------------------------
+_G.CreateLadderModel = function(isGhost)
     local model = Instance.new("Model")
     model.Name  = isGhost and "GhostLadder" or "RealLadder"
+    local basePos = Vector3.new(0, 0, 0) 
+    
+    local root = Instance.new("Part")
+    root.Name = "RootPart"; root.Size = Vector3.new(0.1, 0.1, 0.1); root.Transparency = 1
+    root.CanCollide = false; root.Anchored = isGhost; root.CFrame = CFrame.new(basePos)
+    root.Parent = model; model.PrimaryPart = root
 
-    local basePos = Vector3.new(0, 0, 0)
-    local primary = nil
-
-    -- Side rails
     for _, x in ipairs({-sideOffset, sideOffset}) do
         local side = Instance.new("Part")
-        side.Name         = "Side"
-        side.Size         = Vector3.new(sideWidth, ladderHeight, sideWidth)
-        side.Anchored     = isGhost
-        side.CanCollide   = not isGhost
-        side.Transparency = isGhost and 0.6 or 0
-        side.Material     = Enum.Material.Wood
-        side.BrickColor   = BrickColor.new("Reddish brown")
-        side.CFrame       = CFrame.new(basePos + Vector3.new(x, ladderHeight/2, 0))
-        side.Parent       = model
-
-        if not primary then
-            primary = side
-        end
+        side.Name = "Side"; side.Size = Vector3.new(sideWidth, ladderHeight, sideWidth)
+        side.Material = Enum.Material.Wood; side.BrickColor = BrickColor.new("Reddish brown")
+        side.CFrame = CFrame.new(basePos + Vector3.new(x, ladderHeight/2, 0))
+        setupPartProperties(side, isGhost, false); side.Parent = model
     end
 
-    -- Rungs
     for i = 0, math.floor(ladderHeight/rungSpacing)-1 do
         local rung = Instance.new("Part")
-        rung.Name         = "Rung"
-        rung.Size         = Vector3.new(rungLength, rungWidth, rungWidth)
-        rung.Anchored     = isGhost
-        rung.CanCollide   = not isGhost
-        rung.Transparency = isGhost and 0.6 or 0
-        rung.Material     = Enum.Material.Wood
-        rung.BrickColor   = BrickColor.new("Reddish brown")
-        rung.CFrame       = CFrame.new(basePos + Vector3.new(0, rungSpacing*i + 0.2, 0))
-        rung.Parent       = model
+        rung.Name = "Rung"; rung.Size = Vector3.new(rungLength, rungWidth, rungWidth)
+        rung.Material = Enum.Material.Wood; rung.BrickColor = BrickColor.new("Reddish brown")
+        rung.CFrame = CFrame.new(basePos + Vector3.new(0, rungSpacing*i + 0.5, 0))
+        setupPartProperties(rung, isGhost, false); rung.Parent = model
     end
 
-    if not isGhost then
-        -- Invisible base support so ladder không đổ
-        local base = Instance.new("Part")
-        base.Name         = "BaseSupport"
-        base.Size         = Vector3.new(3.5, 0.4, 3.5)
-        base.Anchored     = false
-        base.CanCollide   = true
-        base.Transparency = 1
-        base.CFrame       = CFrame.new(basePos + Vector3.new(0, -0.2, 0))
-        base.Parent       = model
+    local squareBase = Instance.new("Part")
+    squareBase.Name = "SquareBase5x5"; squareBase.Size = Vector3.new(5, 0.4, 5)
+    squareBase.Material = Enum.Material.Wood; squareBase.Transparency = 1 
+    squareBase.CFrame = CFrame.new(basePos + Vector3.new(0, 0.2, 0))
+    setupPartProperties(squareBase, isGhost, true); squareBase.Parent = model
 
-        -- Two extra bottom legs, same width as side rails
-        for _, x in ipairs({-sideOffset, sideOffset}) do
-            local leg = Instance.new("Part")
-            leg.Name         = "BottomLeg"
-            leg.Size         = Vector3.new(sideWidth, 2, sideWidth)
-            leg.Anchored     = false
-            leg.CanCollide   = true
-            leg.Transparency = 0
-            leg.BrickColor   = BrickColor.new("Reddish brown")
-            leg.CFrame       = CFrame.new(basePos + Vector3.new(x, -1, 0))
-            leg.Parent       = model
-        end
-    end
-
-    -- Weld all parts to primary
-    model.PrimaryPart = primary
     if not isGhost then
         for _, part in ipairs(model:GetChildren()) do
-            if part:IsA("Part") and part ~= primary then
+            if part:IsA("Part") and part ~= root then
                 local weld = Instance.new("WeldConstraint")
-                weld.Part0 = primary
-                weld.Part1 = part
-                weld.Parent = part
+                weld.Part0 = root; weld.Part1 = part; weld.Parent = part
             end
         end
     end
-
     return model
 end
 
 --------------------------------------------------------------------------------
--- Cleanup on respawn & show notification once
+-- CẤP THANG VÀ XỬ LÝ LÕI SỰ KIỆN TOOL
 --------------------------------------------------------------------------------
-player.CharacterAdded:Connect(function(char)
-    character = char
+local function calculateTargetCFrame()
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return nil end
+    return (character.HumanoidRootPart.CFrame * CFrame.new(0, -3, -6)) * getModeRotation()
+end
 
-    -- destroy any old preview
-    if ghostLadder then
-        ghostLadder:Destroy()
-        ghostLadder = nil
-    end
-
-    -- if no Ladder tool in backpack, show notification once
-    if not player.Backpack:FindFirstChild("Ladder") then
-        if not notificationGui then
-            -- Show GUI
-            notificationGui = Instance.new("ScreenGui")
-            notificationGui.Name   = "LadderNotify"
-            notificationGui.Parent = player:WaitForChild("PlayerGui")
-
-            local frame = Instance.new("Frame", notificationGui)
-            frame.Size            = UDim2.new(0.5, 0, 0.3, 0)
-            frame.Position        = UDim2.new(0.25, 0, 0.35, 0)
-            frame.BackgroundColor3    = Color3.fromRGB(0, 0, 0)
-            frame.BackgroundTransparency = 0.5
-
-            local msg = Instance.new("TextLabel", frame)
-            msg.Size               = UDim2.new(1, 0, 0.6, 0)
-            msg.Position           = UDim2.new(0, 0, 0, 0)
-            msg.BackgroundTransparency = 1
-            msg.TextColor3         = Color3.new(1,1,1)
-            msg.TextScaled         = true
-            msg.Text               = "You don't have the Ladder tool.\nRetrieve it?"
-
-            local yesBtn = Instance.new("TextButton", frame)
-            yesBtn.Size            = UDim2.new(0.45, 0, 0.3, 0)
-            yesBtn.Position        = UDim2.new(0.05, 0, 0.65, 0)
-            yesBtn.Text            = "Yes"
-            yesBtn.TextColor3      = Color3.new(1,1,1)
-            yesBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
-            yesBtn.MouseButton1Click:Connect(function()
-                tool.Parent = player.Backpack
-                notificationGui:Destroy()
-                notificationGui = nil
-            end)
-
-            local noBtn = Instance.new("TextButton", frame)
-            noBtn.Size             = UDim2.new(0.45, 0, 0.3, 0)
-            noBtn.Position         = UDim2.new(0.5, 0, 0.65, 0)
-            noBtn.Text             = "No"
-            noBtn.TextColor3       = Color3.new(1,1,1)
-            noBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
-            noBtn.MouseButton1Click:Connect(function()
-                notificationGui:Destroy()
-                notificationGui = nil
-            end)
+local function giveLadderTool()
+    local tool = Instance.new("Tool")
+    tool.Name = "Ladder"
+    tool.RequiresHandle = false
+    
+    tool.Equipped:Connect(function()
+        modeGui.Enabled = true
+        if currentMode ~= "Punch" then
+            if ghostLadder then ghostLadder:Destroy() end
+            ghostLadder = _G.CreateLadderModel(true)
+            ghostLadder.Parent = workspace
         end
-    end
-end)
+    end)
 
---------------------------------------------------------------------------------
--- Preview creation / cleanup
---------------------------------------------------------------------------------
-tool.Equipped:Connect(function()
-    if ghostLadder then
-        ghostLadder:Destroy()
-    end
-    ghostLadder = createLadderModel(true)
-    ghostLadder.Parent = workspace
-end)
+    tool.Unequipped:Connect(function()
+        modeGui.Enabled = false
+        if ghostLadder then ghostLadder:Destroy(); ghostLadder = nil end
+    end)
 
-tool.Unequipped:Connect(function()
-    if ghostLadder then
-        ghostLadder:Destroy()
-        ghostLadder = nil
-    end
-end)
+    tool.Activated:Connect(function()
+        if debounce then return end
+        debounce = true
 
---------------------------------------------------------------------------------
--- Update preview position every frame
---------------------------------------------------------------------------------
-RunService.RenderStepped:Connect(function()
-    if ghostLadder
-    and character:FindFirstChild("HumanoidRootPart") then
+        if currentMode == "Punch" then
+            local hrp = character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local block = Instance.new("Part")
+                block.Name = "PunchBlock"
+                block.Size = Vector3.new(8, 8, 8) 
+                block.BrickColor = BrickColor.new("Bright red")
+                block.Material = Enum.Material.Neon
+                block.CanCollide = false
+                block.Anchored = false
+                
+                local speed = tonumber(punchSpeedBox.Text) or 200
+                local angleDeg = tonumber(punchAngleBox.Text) or 0
+                
+                -- Đã sửa: Khối đẩy sẽ xuất hiện và xoay theo đúng góc độ bạn cấu hình
+                block.CFrame = hrp.CFrame * CFrame.Angles(math.rad(angleDeg), 0, 0) * CFrame.new(0, 0, 15)
+                block.Parent = workspace
+                
+                local forwardDir = (hrp.CFrame * CFrame.Angles(math.rad(angleDeg), 0, 0)).LookVector
+                
+                local bv = Instance.new("BodyVelocity")
+                bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                bv.Velocity = forwardDir * speed
+                bv.Parent = block
+                
+                block.Touched:Connect(function(hit)
+                    local target = hit.Parent
+                    if target then
+                        local targetHum = target:FindFirstChildOfClass("Humanoid")
+                        local targetHrp = target:FindFirstChild("HumanoidRootPart")
+                        if targetHum and targetHrp then
+                            targetHrp.AssemblyLinearVelocity = (forwardDir * speed) + Vector3.new(0, speed/2, 0)
+                            
+                            if target == character then
+                                isFlinging = true
+                                task.delay(5, function() isFlinging = false end)
+                            end
+                        end
+                    end
+                end)
+                
+                local lifeTime = (speed > 100) and 1 or 3
+                Debris:AddItem(block, lifeTime) 
+            end
+        else
+            if placedLadder then
+                placedLadder:Destroy(); placedLadder = nil
+            else
+                local targetCf = calculateTargetCFrame()
+                if targetCf then
+                    placedLadder = _G.CreateLadderModel(false)
+                    placedLadder.Parent = workspace
+                    placedLadder:PivotTo(targetCf)
+                end
+            end
+        end
+        task.wait(0.3)
+        debounce = false
+    end)
+    tool.Parent = player.Backpack
+end
 
-        local hrp = character.HumanoidRootPart
-        local cf  = hrp.CFrame
-                   * CFrame.new(0, 0, -5)
-                   * CFrame.new(0, ladderHeight/2, 0)
-
-        ghostLadder:SetPrimaryPartCFrame(cf)
-    end
-end)
-
---------------------------------------------------------------------------------
--- Place / Remove Ladder on click
---------------------------------------------------------------------------------
-tool.Activated:Connect(function()
-    if debounce then return end
-    debounce = true
-
-    if placedLadder then
-        placedLadder:Destroy()
-        placedLadder = nil
+customHeightBox.FocusLost:Connect(function()
+    local val = tonumber(customHeightBox.Text)
+    if val and val >= 5 then
+        ladderHeight = val
+        if ghostLadder and currentMode ~= "Punch" then
+            local currentCf = ghostLadder:GetPivot()
+            ghostLadder:Destroy()
+            ghostLadder = _G.CreateLadderModel(true)
+            ghostLadder.Parent = workspace
+            ghostLadder:PivotTo(currentCf)
+        end
     else
-        if character:FindFirstChild("HumanoidRootPart") then
-            local hrp = character.HumanoidRootPart
-            local cf  = hrp.CFrame
-                       * CFrame.new(0, 0, -5)
-                       * CFrame.new(0, ladderHeight/2, 0)
+        customHeightBox.Text = tostring(ladderHeight)
+    end
+end)
 
-            placedLadder = createLadderModel(false)
-            placedLadder.Parent = workspace
-            placedLadder:SetPrimaryPartCFrame(cf)
+--------------------------------------------------------------------------------
+-- LẮNG NGHE SỰ KIỆN NHẢY: PHANH VÀ XÓA TOÀN BỘ KHỐI ĐẨY TRÊN KHÔNG
+--------------------------------------------------------------------------------
+table.insert(connections, UserInputService.JumpRequest:Connect(function()
+    if isFlinging and character then
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
         end
+        isFlinging = false 
     end
 
-    task.wait(0.3)
-    debounce = false
-end)
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj.Name == "PunchBlock" then
+            obj:Destroy()
+        end
+    end
+end))
+
+--------------------------------------------------------------------------------
+-- GUI HỎI LẤY THANG
+--------------------------------------------------------------------------------
+local function checkAndShowNotification()
+    if player.PlayerGui:FindFirstChild("LadderNotify") then return end
+    if player.Backpack:FindFirstChild("Ladder") or (character and character:FindFirstChild("Ladder")) then return end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "LadderNotify"
+    gui.ResetOnSpawn = false
+    gui.Parent = player:WaitForChild("PlayerGui")
+
+    local frame = Instance.new("Frame", gui)
+    frame.Size = UDim2.new(0, 300, 0, 100)
+    frame.Position = UDim2.new(0.5, -150, 0.4, -50)
+    frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    frame.BackgroundTransparency = 0.5
+
+    local msg = Instance.new("TextLabel", frame)
+    msg.Size = UDim2.new(1, 0, 0.6, 0)
+    msg.BackgroundTransparency = 1
+    msg.TextColor3 = Color3.new(1,1,1)
+    msg.TextScaled = true
+    msg.Text = "Bạn có muốn lấy thang không?"
+
+    local yesBtn = Instance.new("TextButton", frame)
+    yesBtn.Size = UDim2.new(0.4, 0, 0.3, 0)
+    yesBtn.Position = UDim2.new(0.05, 0, 0.6, 0)
+    yesBtn.Text = "Đồng ý"
+    yesBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+    yesBtn.TextColor3 = Color3.new(1,1,1)
+    yesBtn.MouseButton1Click:Connect(function()
+        giveLadderTool()
+        gui:Destroy()
+    end)
+
+    local noBtn = Instance.new("TextButton", frame)
+    noBtn.Size = UDim2.new(0.4, 0, 0.3, 0)
+    noBtn.Position = UDim2.new(0.55, 0, 0.6, 0)
+    noBtn.Text = "Từ chối"
+    noBtn.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
+    noBtn.TextColor3 = Color3.new(1,1,1)
+    noBtn.MouseButton1Click:Connect(function()
+        gui:Destroy()
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- EVENT LISTENERS
+--------------------------------------------------------------------------------
+local function setupCharacterEvents(char)
+    character = char
+    local humanoid = char:WaitForChild("Humanoid", 5)
+
+    if humanoid then
+        table.insert(connections, humanoid.Died:Connect(function()
+            if placedLadder then placedLadder:Destroy(); placedLadder = nil end
+            if ghostLadder then ghostLadder:Destroy(); ghostLadder = nil end
+            isFlinging = false
+            modeGui.Enabled = false
+        end))
+    end
+    
+    task.wait(0.5)
+    checkAndShowNotification()
+end
+
+table.insert(connections, player.CharacterAdded:Connect(setupCharacterEvents))
+if player.Character then
+    setupCharacterEvents(player.Character)
+end
+
+table.insert(connections, RunService.RenderStepped:Connect(function()
+    if ghostLadder and currentMode ~= "Punch" then
+        local targetCf = calculateTargetCFrame()
+        if targetCf then ghostLadder:PivotTo(targetCf) end
+    end
+end))
